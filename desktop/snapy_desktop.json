@@ -1,0 +1,12 @@
+{
+  "theme": "dark",
+  "out_dir": "C:\\Users\\ramiz\\Snapy",
+  "adb_path": "",
+  "apks_mode": "all",
+  "cloud_backup": true,
+  "include_media": true,
+  "android_data": true,
+  "hash": true,
+  "home_screens": 2,
+  "workers": 4
+}
