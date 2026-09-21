@@ -1,3 +1,11 @@
 STITCH-PROMPTS.md
+FLOW-REEL-SCRIPT.md
+desktop/build
+desktop/dist
+desktop/installer
+desktop/tools
+desktop/vendor/
+build.ps1
+*.spec
 __pycache__
 Claude Outputs

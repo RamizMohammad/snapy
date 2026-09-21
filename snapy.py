@@ -73,6 +73,11 @@ SCHEMA_VERSION = 1
 
 IS_WINDOWS = os.name == "nt"
 
+# When the CLI runs inside a GUI (the Snapy desktop app is a windowed exe),
+# every console child such as adb.exe would pop up its own black window.
+# CREATE_NO_WINDOW suppresses that; output is still captured through pipes.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0
+
 
 # --------------------------------------------------------------------------- #
 #  Console
@@ -408,6 +413,7 @@ class Adb:
                 self._argv(args),
                 capture_output=True,
                 timeout=timeout,
+                creationflags=_NO_WINDOW,
             )
         except subprocess.TimeoutExpired:
             return 124, (b"" if binary else ""), f"timed out after {timeout}s"
@@ -421,9 +427,11 @@ class Adb:
             if any(s in low for s in self._DAEMON_DEAD):
                 warn(f"adb daemon dropped; restarting and retrying "
                      f"(attempt {_attempt + 2}/3)")
-                subprocess.run([self.binary, "kill-server"], capture_output=True, timeout=30)
+                subprocess.run([self.binary, "kill-server"], capture_output=True, timeout=30,
+                               creationflags=_NO_WINDOW)
                 time.sleep(1.5)
-                subprocess.run([self.binary, "start-server"], capture_output=True, timeout=60)
+                subprocess.run([self.binary, "start-server"], capture_output=True, timeout=60,
+                               creationflags=_NO_WINDOW)
                 time.sleep(1.5)
                 return self.raw(args, timeout=timeout, binary=binary, _attempt=_attempt + 1)
         return p.returncode, out, errtxt
