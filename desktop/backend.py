@@ -22,8 +22,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import (QObject, QProcess, QRunnable, Qt, QThreadPool,
-                            Signal, Slot)
+from PySide6.QtCore import (QObject, QProcess, QProcessEnvironment, QRunnable,
+                            Qt, QThreadPool, Signal, Slot)
 
 HERE = Path(__file__).resolve().parent
 CLI_NAMES = ["phone_snapshot.py", "snapy.py", "phone-snapshot.py"]
@@ -50,6 +50,24 @@ def _config_path() -> Path:
 
 
 CONFIG_PATH = _config_path()
+
+
+def scrub_paths(text: str) -> str:
+    """Shorten machine-specific paths before anything goes on screen.
+
+    Install locations and home directories carry the user's account name, which
+    is noise in the UI and a small leak in a screenshot. The app's own folders
+    become <app>, the home directory becomes ~.
+    """
+    if not text:
+        return text
+    out = str(text)
+    for base, token in ((str(BUNDLE_DIR), "<app>"), (str(APP_DIR), "<app>"),
+                        (str(Path.home()), "~")):
+        if not base or base in (".", os.sep):
+            continue
+        out = re.sub(re.escape(base), token, out, flags=re.IGNORECASE)
+    return out
 
 
 def bundled_adb() -> str:
@@ -108,15 +126,50 @@ def find_cli(explicit: Optional[str] = None) -> Optional[Path]:
 
 
 def import_cli(path: Path):
+    mod, _err = _import_cli_verbose(path)
+    return mod
+
+
+def _import_cli_verbose(path: Path):
     try:
         spec = importlib.util.spec_from_file_location("snapy_cli", path)
         if spec is None or spec.loader is None:
-            return None
+            return None, f"cannot load {path.name}"
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
-    except Exception:
-        return None
+        return mod, ""
+    except Exception as e:  # report it - a silent None became "CLI not found"
+        return None, f"{path.name} failed to import: {type(e).__name__}: {e}"
+
+
+def load_cli():
+    """Return (module, path, error).
+
+    Frozen builds import the CLI as a real bundled module. It must NOT be
+    loaded from a data file there: PyInstaller only packages the stdlib
+    modules it discovers by analysis, so a data-file CLI would import
+    tarfile/argparse/hashlib that were never shipped. The literal
+    `import phone_snapshot` below is what makes PyInstaller analyse it.
+    """
+    if FROZEN:
+        try:
+            import phone_snapshot as mod  # noqa: F401  (bundled by build.ps1)
+            return mod, Path(getattr(mod, "__file__", "") or
+                             (BUNDLE_DIR / "phone_snapshot.py")), ""
+        except Exception as e:
+            frozen_err = f"bundled CLI failed to import: {type(e).__name__}: {e}"
+        path = find_cli()
+        if path:
+            mod, err = _import_cli_verbose(path)
+            if mod:
+                return mod, path, ""
+            return None, path, err
+        return None, None, frozen_err
+    path = find_cli()
+    if not path:
+        return None, None, "phone_snapshot.py / snapy.py not found"
+    mod, err = _import_cli_verbose(path)
+    return mod, path, err
 
 
 # --------------------------------------------------------------------------- #
@@ -200,8 +253,7 @@ class Backend(QObject):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
-        self.cli_path = find_cli()
-        self.cli = import_cli(self.cli_path) if self.cli_path else None
+        self.cli, self.cli_path, self.cli_error = load_cli()
         self.proc: Optional[QProcess] = None
         self.current_label = ""
         self._buf = ""
@@ -210,7 +262,25 @@ class Backend(QObject):
     # -- availability ---------------------------------------------------- #
     @property
     def ready(self) -> bool:
-        return self.cli_path is not None
+        return self.cli is not None
+
+    @property
+    def engine(self) -> Dict[str, str]:
+        """How to describe the CLI on screen.
+
+        Deliberately not a file path. Settings used to print the full location
+        of phone_snapshot.py, which in an installed build sits inside the
+        user's profile - unhelpful to read and awkward in a screenshot. The
+        name and version say everything that is actually useful; when the CLI
+        is missing, the error explains itself and is scrubbed of paths.
+        """
+        if not self.cli:
+            return {"tone": "bad", "badge": "UNAVAILABLE",
+                    "detail": scrub_paths(self.cli_error or "CLI not found")}
+        version = str(getattr(self.cli, "VERSION", "") or "").strip()
+        name = f"phone-snapshot {version}" if version else "phone-snapshot"
+        origin = "bundled with this build" if FROZEN else "local script"
+        return {"tone": "ok", "badge": "READY", "detail": f"{name} - {origin}"}
 
     @property
     def busy(self) -> bool:
@@ -224,7 +294,7 @@ class Backend(QObject):
 
     def _probe_device_sync(self) -> Dict[str, Any]:
         if not self.cli:
-            return {"error": "CLI not found"}
+            return {"error": self.cli_error or "CLI not available"}
         adb = self.cli.Adb(self.settings["adb_path"] or None, None)
         usable = [d for d in adb.devices() if d.get("state") == "device"]
         if not usable:
@@ -378,11 +448,16 @@ class Backend(QObject):
     def run(self, args: List[str], label: str) -> bool:
         if self.busy:
             return False
-        if not self.cli_path:
-            self.log_line.emit("[x] phone_snapshot.py not found", "err")
+        if not self.cli:
+            self.log_line.emit(f"[x] {self.cli_error or 'CLI not available'}", "err")
             return False
 
-        argv = ["-u", str(self.cli_path)]
+        if FROZEN:
+            # sys.executable is Snapy.exe here, not Python. main.py routes
+            # '--cli' straight to the CLI instead of opening another window.
+            argv = ["--cli"]
+        else:
+            argv = ["-u", str(self.cli_path)]
         if self.settings["adb_path"]:
             argv += ["--adb", self.settings["adb_path"]]
         argv += args
@@ -391,6 +466,10 @@ class Backend(QObject):
         self._buf = ""
         self.proc = QProcess(self)
         self.proc.setProcessChannelMode(QProcess.MergedChannels)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("PYTHONIOENCODING", "utf-8")
+        self.proc.setProcessEnvironment(env)
         self.proc.readyReadStandardOutput.connect(self._on_output)
         self.proc.finished.connect(self._on_finished)
         self.proc.errorOccurred.connect(self._on_error)

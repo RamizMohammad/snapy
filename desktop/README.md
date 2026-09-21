@@ -97,7 +97,14 @@ refreshes whenever a device is detected and on the Refresh button.
 in `widgets.py` — copy the pattern if you need another.
 
 **Settings** live in `snapy_desktop.json` beside `main.py`, written on close and
-on Save.
+on Save. An installed build keeps them in `%LOCALAPPDATA%\Snapy` instead.
+
+**No install paths on screen.** Settings reports the engine by name and version
+(`phone-snapshot 1.0 · bundled with this build`) rather than printing the path
+to `phone_snapshot.py`, which in an installed build sits inside the user's
+profile — unhelpful to read, and a small leak in any screenshot. Where a path
+genuinely has to be shown, such as an import error, `scrub_paths()` in
+`backend.py` rewrites the app folder to `<app>` and the home directory to `~`.
 
 ## Building an installer
 
@@ -110,12 +117,37 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 `build.ps1` does everything: checks for Python 3.9+, installs PySide6,
 PyInstaller and Pillow, locates the CLI (beside the folder or one level up),
 downloads Android platform-tools so the installed app **ships its own adb**,
-generates the icon if missing, freezes the app, then compiles
-`installer\snapy.iss` with Inno Setup. The result lands in
+generates the icon and the installer artwork if missing, freezes the app, then
+compiles `installer\snapy.iss` with Inno Setup. The result lands in
 `installer\Output\Snapy-1.0.0-setup.exe`.
+
+The wizard is branded rather than stock: a welcome page (`WizardStyle=modern`
+turns that off by default — `DisableWelcomePage=no` turns it back on), a dark
+Loopax banner down the left, the mark in the header, a short "before you start"
+page covering USB debugging and what a snapshot contains, and finish-page
+wording that tells the user what to do next. The artwork is generated, not
+checked in: `tools/make_installer_art.py` draws the banner and the header mark
+at six sizes each into `installer/art/`, and Inno picks the closest match for
+the display's DPI. Edit the generator, delete `installer/art/`, rebuild.
+
+Two Inno details worth knowing if you edit `snapy.iss`: keep it **ASCII** (Inno
+6 needs a UTF-8 BOM to read anything else, and a stray em dash then renders as
+mojibake in the wizard), and the directives that need Inno 6.1+ or 6.3+ sit
+behind `#if Ver >= EncodeVer(...)` guards so an older compiler still works.
 
 Flags: `-SkipInstaller` (exe only), `-SkipAdb` (use adb from PATH instead of
 bundling it), `-Clean` (wipe build/ and dist/ first).
+
+It runs under both Windows PowerShell 5.1 and PowerShell 7. Upgrading pip is
+best-effort — system and conda Pythons frequently cannot replace their own
+pip/setuptools, which has nothing to do with whether the build can proceed — and
+the dependency check trusts `import PySide6, PyInstaller, PIL` rather than pip's
+exit code.
+
+**If you edit `build.ps1`, keep it CRLF and do not add a here-string.** Windows
+PowerShell 5.1 cannot find a here-string terminator in an LF-only file, and the
+failure looks like nonsense: it reports Python keywords as PowerShell syntax
+errors. The icon generator lives in `tools/make_icon.py` for that reason.
 
 If Inno Setup is missing the script says so and stops cleanly — `dist\Snapy\`
 is already built and runnable. Install it with:

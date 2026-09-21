@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QMessageBox,
                                QPushButton, QStackedWidget, QVBoxLayout,
                                QWidget)
 
-from backend import Backend, Settings
+from backend import Backend, Settings, scrub_paths
 from pages import (CapturePage, ChecklistPage, ComparePage, DevicePage,
                    RestorePage, Session, SettingsPage, SnapshotsPage)
 from theme import T, stylesheet
@@ -282,9 +282,10 @@ class MainWindow(QWidget):
     def _no_cli(self):
         QMessageBox.critical(
             self, "Snapy",
-            "phone_snapshot.py was not found.\n\n"
-            "Put this folder next to the CLI, or one level inside the folder "
-            "that contains it, then reopen Snapy.")
+            "The Snapy CLI could not be loaded:\n\n"
+            f"{scrub_paths(self.backend.cli_error)}\n\n"
+            "Running from source: keep this folder beside snapy.py or "
+            "phone_snapshot.py. Installed build: rebuild with build.ps1.")
 
     def closeEvent(self, e):
         if self.backend.busy:
@@ -298,7 +299,40 @@ class MainWindow(QWidget):
         e.accept()
 
 
+def run_cli(argv) -> int:
+    """`Snapy.exe --cli <args>`: run the bundled CLI, no window.
+
+    The installed app has no Python interpreter to launch the CLI with, so the
+    GUI re-invokes its own exe in this mode for long jobs.
+    """
+    import os
+    # A windowed exe starts with no console, so stdout/stderr can be None even
+    # though the parent handed us pipes. Rebind them to the real handles.
+    for name, fd in (("stdout", 1), ("stderr", 2)):
+        if getattr(sys, name) is None:
+            try:
+                setattr(sys, name, open(fd, "w", encoding="utf-8", errors="replace",
+                                        buffering=1, closefd=False))
+            except OSError:
+                setattr(sys, name, open(os.devnull, "w"))
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True, encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    from backend import load_cli
+    cli, _path, error = load_cli()
+    if cli is None:
+        sys.stderr.write(f"[x] {error}\n")
+        return 2
+    return int(cli.main(list(argv)) or 0)
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--cli":
+        return run_cli(sys.argv[2:])
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)

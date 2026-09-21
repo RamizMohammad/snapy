@@ -1168,15 +1168,22 @@ class SettingsPage(Page):
         card.v.addWidget(self.adb[0])
         self.v.addWidget(card)
 
-        info = Card(pad=20, spacing=8)
-        info.v.addWidget(label("BACKEND", "FieldLabel"))
-        path = str(backend.cli_path) if backend.cli_path else "not found"
-        lb = label(path, "Mono", T.TEXT if backend.cli_path else T.ERROR)
-        lb.setWordWrap(True)
-        info.v.addWidget(lb)
+        # Name and version, not a file path: the install location is inside the
+        # user's profile and has no business being on screen or in a screenshot.
+        info = Card(pad=20, spacing=10)
+        info.v.addWidget(label("ENGINE", "FieldLabel"))
+        eng = backend.engine
+        eng_row = QHBoxLayout()
+        eng_row.setSpacing(10)
+        eng_row.addWidget(Badge(eng["badge"], eng["tone"]), 0, Qt.AlignVCenter)
+        detail = label(eng["detail"], "Mono",
+                       T.TEXT if eng["tone"] == "ok" else T.ERROR)
+        detail.setWordWrap(True)
+        eng_row.addWidget(detail, 1)
+        info.v.addLayout(eng_row)
         info.v.addWidget(label(
-            "Snapy drives this command-line tool. Every action in the UI runs "
-            "the same commands you could type yourself.", "Sub"))
+            "Snapy drives a command-line tool. Every action in the UI runs the "
+            "same commands you could type yourself.", "Sub"))
         self.v.addWidget(info)
 
         save = QPushButton("Save")
